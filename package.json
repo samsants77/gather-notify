@@ -1,0 +1,16 @@
+{
+  "name": "gather-notify-bot",
+  "version": "1.0.0",
+  "description": "Bot de notificações para Gather.town",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node bot.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
