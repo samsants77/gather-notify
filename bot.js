@@ -1,11 +1,6 @@
-const WebSocket = require('ws');
+const { Game } = require('@gathertown/gather-game-client');
 const http = require('http');
 const url = require('url');
-const dns = require('dns');
-const { promisify } = require('util');
-
-const dnsLookup = promisify(dns.lookup);
-const dnsResolve4 = promisify(dns.resolve4);
 
 // ===================== CONFIGURAÇÕES =====================
 const GATHER_API_KEY = process.env.GATHER_API_KEY || '5y3xKlHUiEBYeTMq';
@@ -13,141 +8,57 @@ const GATHER_SPACE_ID = process.env.GATHER_SPACE_ID || '4601933d-6215-4853-9f04-
 const PORT = process.env.PORT || 3000;
 
 // ===================== ESTADO =====================
-let ws = null;
+let game = null;
 let connected = false;
 let reconnectAttempts = 0;
 let lastError = null;
 let messageQueue = [];
 let reconnectTimer = null;
 
-// ===================== FALLBACK IPs DO GATHER =====================
-// IPs conhecidos do Gather (atualizados periodicamente)
-const GATHER_FALLBACK_IPS = [
-  '18.214.26.48',
-  '3.225.6.48',
-  '54.209.100.91'
-];
-
-// ===================== FUNÇÕES DNS =====================
-async function resolveGatherIP() {
-  const methods = [];
-
-  // Método 1: dns.lookup
-  try {
-    const result = await dnsLookup('game.gather.town');
-    methods.push({ method: 'dns.lookup', ip: result.address });
-  } catch (e) {
-    methods.push({ method: 'dns.lookup', error: e.message });
-  }
-
-  // Método 2: dns.resolve4
-  try {
-    const results = await dnsResolve4('game.gather.town');
-    if (results && results.length > 0) {
-      methods.push({ method: 'dns.resolve4', ip: results[0] });
-    }
-  } catch (e) {
-    methods.push({ method: 'dns.resolve4', error: e.message });
-  }
-
-  // Método 3: Tentar conectar HTTPS e pegar IP
-  try {
-    const https = require('https');
-    const ip = await new Promise((resolve, reject) => {
-      const req = https.get('https://game.gather.town', { timeout: 5000 }, (res) => {
-        const socket = res.socket;
-        if (socket && socket.remoteAddress) {
-          resolve(socket.remoteAddress);
-        } else {
-          reject(new Error('No remote address'));
-        }
-        res.destroy();
-      });
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
-    });
-    methods.push({ method: 'https.get', ip: ip });
-  } catch (e) {
-    methods.push({ method: 'https.get', error: e.message });
-  }
-
-  console.log('🔍 DNS Resolution attempts:', JSON.stringify(methods, null, 2));
-
-  // Retorna o primeiro IP válido encontrado
-  for (const m of methods) {
-    if (m.ip) return m.ip;
-  }
-
-  // Fallback para IPs conhecidos
-  console.log('⚠️  Usando IP fallback:', GATHER_FALLBACK_IPS[0]);
-  return GATHER_FALLBACK_IPS[0];
-}
-
-// ===================== CONEXÃO GATHER =====================
-async function connectToGather() {
+// ===================== CONEXÃO GATHER (BIBLIOTECA OFICIAL) =====================
+function connectToGather() {
   if (connected || reconnectAttempts > 20) return;
 
   reconnectAttempts++;
   console.log(`🔄 Tentativa de conexão #${reconnectAttempts}...`);
 
   try {
-    const ip = await resolveGatherIP();
-    const wsUrl = `wss://${ip}/?spaceId=${GATHER_SPACE_ID}&apiKey=${GATHER_API_KEY}`;
+    game = new Game(GATHER_SPACE_ID, () => GATHER_API_KEY);
 
-    console.log(`🔗 Conectando em: wss://${ip}/...`);
+    // Evento de conexão
+    game.subscribeToConnection((connected_) => {
+      connected = connected_;
+      if (connected_) {
+        console.log('✅ Conectado ao Gather via biblioteca oficial!');
+        reconnectAttempts = 0;
+        lastError = null;
 
-    ws = new WebSocket(wsUrl, {
-      headers: {
-        'Host': 'game.gather.town',
-        'Origin': 'https://app.gather.town',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      rejectUnauthorized: false, // Necessário quando conecta por IP direto
-      handshakeTimeout: 15000,
-      perMessageDeflate: false
-    });
-
-    ws.on('open', () => {
-      console.log('✅ Conectado ao Gather!');
-      connected = true;
-      reconnectAttempts = 0;
-      lastError = null;
-
-      // Enviar mensagens pendentes
-      while (messageQueue.length > 0) {
-        const msg = messageQueue.shift();
-        sendChatMessage(msg.text, msg.mapId);
-      }
-    });
-
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data);
-        if (msg.event === 'ready') {
-          console.log('🎉 Gather está pronto!');
+        // Enviar mensagens pendentes
+        while (messageQueue.length > 0) {
+          const msg = messageQueue.shift();
+          sendChatMessage(msg.text, msg.mapId);
         }
-      } catch (e) {
-        // Ignora mensagens não-JSON
+      } else {
+        console.log('🔌 Desconectado do Gather. Reconectando em 5s...');
+        lastError = 'Desconectado';
+
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => connectToGather(), 5000);
       }
     });
 
-    ws.on('error', (err) => {
-      console.error('❌ Erro WebSocket:', err.message);
-      lastError = err.message;
-      connected = false;
+    // Evento de erro
+    game.subscribeToEvent('error', (data) => {
+      console.error('❌ Erro do Gather:', data);
+      lastError = JSON.stringify(data);
     });
 
-    ws.on('close', () => {
-      console.log('🔌 Conexão fechada. Reconectando em 5s...');
-      connected = false;
-      ws = null;
-
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      reconnectTimer = setTimeout(() => connectToGather(), 5000);
-    });
+    // Conectar
+    game.connect();
+    console.log('🔗 Iniciando conexão com Gather...');
 
   } catch (err) {
-    console.error('❌ Falha ao conectar:', err.message);
+    console.error('❌ Falha ao criar conexão:', err.message);
     lastError = err.message;
     connected = false;
 
@@ -158,36 +69,22 @@ async function connectToGather() {
 
 // ===================== ENVIAR MENSAGEM =====================
 function sendChatMessage(text, mapId = 'office') {
-  if (!connected || !ws || ws.readyState !== WebSocket.OPEN) {
+  if (!connected || !game) {
     console.log('📥 Mensagem enfileirada:', text);
     messageQueue.push({ text, mapId });
     return false;
   }
 
   try {
-    ws.send(JSON.stringify({
-      event: 'playerInteracts',
-      payload: {
-        data: {
-          objectId: 'notification-bot',
-          mapId: mapId,
-          key: 'spaceId',
-          value: GATHER_SPACE_ID
-        }
-      }
-    }));
+    // Enviar mensagem no chat global usando a biblioteca oficial
+    // O evento correto para chat no Gather é 'playerChats'
+    game.sendAction('playerChats', {
+      contents: text,
+      mapId: mapId,
+      recipient: 'global'
+    });
 
-    // Usar o evento correto do Gather para chat
-    ws.send(JSON.stringify({
-      event: 'playerChats',
-      payload: {
-        contents: text,
-        mapId: mapId,
-        recipient: 'global'
-      }
-    }));
-
-    console.log('💬 Mensagem enviada:', text);
+    console.log('💬 Mensagem enviada via biblioteca oficial:', text);
     return true;
   } catch (err) {
     console.error('❌ Erro ao enviar:', err.message);
@@ -275,12 +172,12 @@ server.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('🛑 SIGTERM recebido. Desligando...');
-  if (ws) ws.close();
+  if (game) game.disconnect();
   server.close(() => process.exit(0));
 });
 
 process.on('SIGINT', () => {
   console.log('🛑 SIGINT recebido. Desligando...');
-  if (ws) ws.close();
+  if (game) game.disconnect();
   server.close(() => process.exit(0));
 });
