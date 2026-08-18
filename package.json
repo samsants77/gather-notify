@@ -1,13 +1,14 @@
 {
   "name": "gather-notify-bot",
   "version": "1.0.0",
-  "description": "Bot de notificações para Gather.town",
+  "description": "Bot de notificações para Gather.town usando biblioteca oficial",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "node bot.js"
   },
   "dependencies": {
+    "@gathertown/gather-game-client": "^37.0.0",
     "ws": "^8.16.0"
   },
   "engines": {
